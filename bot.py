@@ -5,7 +5,7 @@ from flask import Flask
 
 app = Flask(__name__)
 
-# 1. Binance Testnet : Uniquement pour exécuter les ordres fictifs
+# 1. Binance Testnet : pour les ordres fictifs
 API_KEY = os.environ.get("BINANCE_API_KEY")
 SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
 exchange_test = ccxt.binance({
@@ -16,7 +16,7 @@ exchange_test = ccxt.binance({
 })
 exchange_test.set_sandbox_mode(True)
 
-# 2. MEXC : Utilisé pour lire les vraies données de marché (accessible depuis un serveur US)
+# 2. MEXC : pour lire les vrais prix
 exchange_data = ccxt.mexc({
     'enableRateLimit': True,
     'timeout': 30000,
@@ -27,8 +27,6 @@ cryptos = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 def check_signal(symbol):
     try:
         print(f"Récupération des données pour {symbol}...", flush=True)
-        
-        # Récupération des bougies via MEXC
         ohlcv = exchange_data.fetch_ohlcv(symbol, timeframe='1d', limit=200)
         
         if not ohlcv or len(ohlcv) < 200:
@@ -43,16 +41,17 @@ def check_signal(symbol):
         last = df.iloc[-1]
         price = last['close']
         
-        # Logique de la stratégie validée
-if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50'] or True: # <-- Le 'or True' force le test
-    signal_msg = f"🟢 [TEST FORCÉ] ACHAT possible sur {symbol} à {price}$"
-    try:
-        # Passage de l'ordre sur le Testnet Binance
-        order = exchange_test.create_market_buy_order(symbol, 0.001)
-        signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
-    except Exception as e:
-        signal_msg += f"\n❌ Erreur lors de l'ordre Testnet: {e}"
-    return signal_msg
+        # --- TEST FORCÉ (pour valider le passage d'ordre) ---
+        if True: 
+            signal_msg = f"🟢 [TEST FORCÉ] ACHAT possible sur {symbol} à {price}$"
+            try:
+                order = exchange_test.create_market_buy_order(symbol, 0.001)
+                signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
+            except Exception as e:
+                signal_msg += f"\n❌ Erreur lors de l'ordre Testnet: {e}"
+            return signal_msg
+        # ----------------------------------------------------
+            
         elif price < last['SMA_200']:
             return f"🔴 ATTENTE sur {symbol} (Prix {price:.2f}$ sous SMA 200 à {last['SMA_200']:.2f}$)"
         else:
@@ -72,7 +71,7 @@ def bot_loop():
 
 @app.route('/')
 def home():
-    return "Bot opérationnel (Données: MEXC, Ordres: Binance Testnet) et en ligne !"
+    return "Bot opérationnel (TEST FORCÉ) et en ligne !"
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
