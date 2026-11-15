@@ -1,21 +1,45 @@
-import ccxt, pandas as pd, time, os, threading
+import ccxt
+import pandas as pd
+import time, os, threading
 from flask import Flask
 
 app = Flask(__name__)
-exchange = ccxt.binance()
+
+API_KEY = os.environ.get("BINANCE_API_KEY")
+SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
+
+exchange = ccxt.binance({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'enableRateLimit': True,
+})
+
+# Activation du mode Testnet
+exchange.set_sandbox_mode(True)
+
 cryptos = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 
 def check_signal(symbol):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=200)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
         df['SMA_20'] = df['close'].rolling(window=20).mean()
         df['SMA_50'] = df['close'].rolling(window=50).mean()
         df['SMA_200'] = df['close'].rolling(window=200).mean()
+        
         last = df.iloc[-1]
         price = last['close']
+        
         if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50']:
-            return f"🟢 ACHAT possible sur {symbol} à {price}$"
+            signal_msg = f"🟢 ACHAT possible sur {symbol} à {price}$"
+            try:
+                # Achat fictif sur le Testnet
+                order = exchange.create_market_buy_order(symbol, 0.001)
+                signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
+            except Exception as e:
+                signal_msg += f"\n❌ Erreur lors de l'ordre: {e}"
+            return signal_msg
         elif price < last['SMA_200']:
             return f"🔴 ATTENTE sur {symbol} (Prix sous SMA 200)"
         else:
@@ -32,7 +56,7 @@ def bot_loop():
 
 @app.route('/')
 def home():
-    return "Bot en ligne !"
+    return "Bot connecté au Testnet Binance et en ligne !"
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
