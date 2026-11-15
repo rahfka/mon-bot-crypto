@@ -1,77 +1,61 @@
-import ccxt
 import pandas as pd
 import time, os, threading
 from flask import Flask
+from marginpad import MarginPad
 
 app = Flask(__name__)
 
-# 1. Binance Testnet : pour les ordres fictifs
-API_KEY = os.environ.get("BINANCE_API_KEY")
-SECRET_KEY = os.environ.get("BINANCE_SECRET_KEY")
-exchange_test = ccxt.binance({
-    'apiKey': API_KEY,
-    'secret': SECRET_KEY,
-    'enableRateLimit': True,
-    'timeout': 30000,
-})
-exchange_test.set_sandbox_mode(True)
+# Récupération de la clé API depuis les variables d'environnement Render
+API_KEY = os.environ.get("MARGINPAD_API_KEY")
+mp = MarginPad(API_KEY)
 
-# 2. MEXC : pour lire les vrais prix
-exchange_data = ccxt.mexc({
-    'enableRateLimit': True,
-    'timeout': 30000,
-})
-
-cryptos = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+# MarginPad fonctionne avec des paires comme BTC, ETH, SOL
+cryptos = ['BTC', 'ETH', 'SOL']
 
 def check_signal(symbol):
     try:
-        print(f"Récupération des données pour {symbol}...", flush=True)
-        ohlcv = exchange_data.fetch_ohlcv(symbol, timeframe='1d', limit=200)
+        print(f"Analyse de {symbol}...", flush=True)
         
-        if not ohlcv or len(ohlcv) < 200:
-            return f"❌ Pas assez de données pour {symbol}"
+        # Récupération du prix en direct (données publiques, pas besoin de clé pour ça)
+        current_price = mp.price(symbol)
+        
+        # Pour calculer les SMA, on a besoin d'un historique.
+        # MarginPad ne fournit pas directement de bougies OHLCV, 
+        # on va donc simuler un historique simple en attendant.
+        # (Note: Pour un backtest précis, on utiliserait l'outil de Verdroid,
+        # ici on passe à l'exécution en direct)
+        
+        # --- STRATÉGIE SIMPLIFIÉE POUR LE TEST EN DIRECT ---
+        # On va utiliser une logique de prix simple pour l'exemple.
+        # Dans un vrai bot, on récupérerait les 200 dernières bougies via un autre fournisseur.
+        # Pour l'instant, on va juste tester que l'ordre passe.
+        
+        # TEST FORCÉ pour valider la connexion
+        signal_msg = f"🟢 [TEST] ACHAT de {symbol} à {current_price}$"
+        try:
+            # Ouverture d'une position virtuelle (papier)
+            # On mise 100$ avec un levier de 1 (pas de levier pour simplifier)
+            pos = mp.open(symbol, "long", margin_usd=100, leverage=1)
+            signal_msg += f"\n✅ Position ouverte sur MarginPad ! ID: {pos.get('id')}"
+        except Exception as e:
+            signal_msg += f"\n❌ Erreur: {e}"
+        return signal_msg
 
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        df['SMA_20'] = df['close'].rolling(window=20).mean()
-        df['SMA_50'] = df['close'].rolling(window=50).mean()
-        df['SMA_200'] = df['close'].rolling(window=200).mean()
-        
-        last = df.iloc[-1]
-        price = last['close']
-        
-        # --- TEST FORCÉ (pour valider le passage d'ordre) ---
-        if True: 
-            signal_msg = f"🟢 [TEST FORCÉ] ACHAT possible sur {symbol} à {price}$"
-            try:
-                order = exchange_test.create_market_buy_order(symbol, 0.001)
-                signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
-            except Exception as e:
-                signal_msg += f"\n❌ Erreur lors de l'ordre Testnet: {e}"
-            return signal_msg
-        # ----------------------------------------------------
-            
-        elif price < last['SMA_200']:
-            return f"🔴 ATTENTE sur {symbol} (Prix {price:.2f}$ sous SMA 200 à {last['SMA_200']:.2f}$)"
-        else:
-            return f"🟡 NEUTRE sur {symbol}"
-            
     except Exception as e:
         return f"Erreur sur {symbol}: {e}"
 
 def bot_loop():
     while True:
-        print(f"\n--- Analyse du {pd.Timestamp.now()} ---", flush=True) 
+        print(f"\n--- Analyse du {pd.Timestamp.now()} ---", flush=True)
         for crypto in cryptos:
             print(check_signal(crypto), flush=True)
         
-        print("Attente de 1 heure avant la prochaine analyse...", flush=True)
+        print("Attente de 1 heure...", flush=True)
         time.sleep(3600)
 
 @app.route('/')
 def home():
-    return "Bot opérationnel (TEST FORCÉ) et en ligne !"
+    return "Bot MarginPad en ligne !"
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
