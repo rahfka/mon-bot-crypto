@@ -44,15 +44,15 @@ def check_signal(symbol):
         price = last['close']
         
         # Logique de la stratégie validée
-        if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50']:
-            signal_msg = f"🟢 ACHAT possible sur {symbol} à {price}$"
-            try:
-                # Passage de l'ordre sur le Testnet Binance
-                order = exchange_test.create_market_buy_order(symbol, 0.001)
-                signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
-            except Exception as e:
-                signal_msg += f"\n❌ Erreur lors de l'ordre Testnet: {e}"
-            return signal_msg
+if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50'] or True: # <-- Le 'or True' force le test
+    signal_msg = f"🟢 [TEST FORCÉ] ACHAT possible sur {symbol} à {price}$"
+    try:
+        # Passage de l'ordre sur le Testnet Binance
+        order = exchange_test.create_market_buy_order(symbol, 0.001)
+        signal_msg += f"\n✅ Ordre d'achat Testnet passé ! ID: {order.get('id')}"
+    except Exception as e:
+        signal_msg += f"\n❌ Erreur lors de l'ordre Testnet: {e}"
+    return signal_msg
         elif price < last['SMA_200']:
             return f"🔴 ATTENTE sur {symbol} (Prix {price:.2f}$ sous SMA 200 à {last['SMA_200']:.2f}$)"
         else:
