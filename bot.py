@@ -5,7 +5,6 @@ from flask import Flask
 
 app = Flask(__name__)
 
-# 1. Connexion à Hyperliquid
 HL_PRIVATE_KEY = os.environ.get("HYPERLIQUID_PRIVATE_KEY")
 HL_WALLET_ADDRESS = os.environ.get("HYPERLIQUID_WALLET_ADDRESS")
 
@@ -16,7 +15,6 @@ exchange = ccxt.hyperliquid({
     'timeout': 30000,
 })
 
-# 2. Configuration Telegram
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -25,67 +23,78 @@ def send_telegram_message(message):
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
             requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
-            print("📬 Message Telegram envoyé !", flush=True)
         except Exception as e:
             print(f"Erreur Telegram: {e}", flush=True)
 
-cryptos = ['BTC/USDC:USDC', 'ETH/USDC:USDC', 'SOL/USDC:USDC']
+cryptos = ['BTC/USDC:USDC', 'ETH/USDC:USDC']
 
 def check_signal(symbol):
     try:
-        print(f"Analyse de {symbol}...", flush=True)
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=200)
+        print(f"Analyse de {symbol} (Timeframe 4h)...", flush=True)
+        # On passe en 4h pour cette stratégie
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=200)
         
         if not ohlcv or len(ohlcv) < 200:
             return f"❌ Pas assez de données pour {symbol}"
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['SMA_20'] = df['close'].rolling(window=20).mean()
-        df['SMA_50'] = df['close'].rolling(window=50).mean()
-        df['SMA_200'] = df['close'].rolling(window=200).mean()
+        
+        # Calcul des EMA (Moyennes Mobiles Exponentielles)
+        df['EMA_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['EMA_50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['EMA_200'] = df['close'].ewm(span=200, adjust=False).mean()
         
         last = df.iloc[-1]
         price = last['close']
         
-        if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50']:
-            signal_msg = f"🟢 ACHAT possible sur {symbol} à {price:.2f}$"
-            try:
-                # --- GESTION DU LEVIER ET DE LA TAILLE MINIMALE ---
-                # On récupère le solde pour calculer la taille
-                balance = exchange.fetch_balance()
-                free_usdc = balance['USDC']['free']
-                
-                # Hyperliquid exige une position minimale de 10$
-                # On utilise un levier de 2x pour que la position soit assez grande
-                leverage = 2
-                exchange.set_leverage(leverage, symbol)
-                
-                # Calcul de la taille de la position (en actifs)
-                # On mise tout le solde disponible avec le levier
-                position_value = free_usdc * leverage
-                amount = position_value / price
-                
-                # Récupération du prix médian pour l'ordre au marché
-                markets = exchange.load_markets()
-                mid_price = markets[symbol]['info']['midPx']
-                
-                order = exchange.create_order(
-                    symbol, 
-                    'market', 
-                    'buy', 
-                    amount, 
-                    price=mid_price
-                )
-                signal_msg += f"\n✅ Position ouverte sur Hyperliquid ! Levier: {leverage}x"
-                send_telegram_message(signal_msg)
-            except Exception as e:
-                signal_msg += f"\n❌ Erreur Hyperliquid: {e}"
-            return signal_msg
+        # Récupération des positions ouvertes
+        positions = exchange.fetch_positions([symbol])
+        open_position = None
+        for pos in positions:
+            if pos['contracts'] > 0:
+                open_position = pos
+                break
+
+        # --- LOGIQUE DE TRADING ---
+        if open_position:
+            # On a une position ouverte
+            entry_price = open_position['entryPrice']
+            stop_loss = entry_price * 0.95 # Stop loss à 5%
             
-        elif price < last['SMA_200']:
-            return f"🔴 ATTENTE sur {symbol} (Prix {price:.2f}$ sous SMA 200 à {last['SMA_200']:.2f}$)"
+            if price < stop_loss:
+                print(f"🛑 STOP LOSS atteint sur {symbol} à {price}$ (Achat à {entry_price}$)", flush=True)
+                exchange.create_market_sell_order(symbol, open_position['contracts'])
+                send_telegram_message(f"🛑 STOP LOSS sur {symbol} à {price}$")
+                return f"Position fermée (SL) sur {symbol}"
+                
+            elif last['EMA_20'] < last['EMA_50']:
+                print(f"🔴 SIGNAL DE VENTE sur {symbol} à {price}$ (Croisement baissier)", flush=True)
+                exchange.create_market_sell_order(symbol, open_position['contracts'])
+                send_telegram_message(f"🔴 VENTE sur {symbol} à {price}$")
+                return f"Position fermée sur {symbol}"
+            else:
+                return f"🟡 Position en cours sur {symbol} (Achat: {entry_price}$, Actuel: {price}$)"
+                
         else:
-            return f"🟡 NEUTRE sur {symbol}"
+            # Pas de position ouverte, on cherche un signal d'achat
+            if price > last['EMA_200'] and last['EMA_20'] > last['EMA_50']:
+                signal_msg = f"🟢 ACHAT possible sur {symbol} à {price:.2f}$"
+                try:
+                    # Calcul de la taille de la position pour ~10$ (sans levier)
+                    markets = exchange.load_markets()
+                    amount = 10 / price # Taille pour environ 10$
+                    amount = float(exchange.amount_to_precision(symbol, amount))
+                    
+                    order = exchange.create_order(symbol, 'market', 'buy', amount)
+                    signal_msg += f"\n✅ Position ouverte ! Taille: {amount} {symbol.split('/')[0]}"
+                    send_telegram_message(signal_msg)
+                except Exception as e:
+                    signal_msg += f"\n❌ Erreur Hyperliquid: {e}"
+                return signal_msg
+            elif price < last['EMA_200']:
+                return f"🔴 ATTENTE sur {symbol} (Prix sous EMA 200)"
+            else:
+                return f"🟡 NEUTRE sur {symbol}"
             
     except Exception as e:
         return f"Erreur sur {symbol}: {e}"
@@ -96,12 +105,12 @@ def bot_loop():
         for crypto in cryptos:
             print(check_signal(crypto), flush=True)
         
-        print("Attente de 1 heure avant la prochaine analyse...", flush=True)
-        time.sleep(3600)
+        print("Attente de 4 heures avant la prochaine analyse...", flush=True)
+        time.sleep(14400) # 4 heures en secondes
 
 @app.route('/')
 def home():
-    return "Bot Hyperliquid (RÉEL) en ligne !"
+    return "Bot Hyperliquid (Stratégie 4h EMA 20/50) en ligne !"
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
