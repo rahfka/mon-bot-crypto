@@ -2,21 +2,21 @@ import ccxt
 import pandas as pd
 import time, os, threading, requests
 from flask import Flask
-from marginpad import MarginPad
 
 app = Flask(__name__)
 
-# 1. Connexion à MarginPad (Ordres)
-MP_API_KEY = os.environ.get("MARGINPAD_API_KEY")
-mp = MarginPad(MP_API_KEY)
+# 1. Connexion à Hyperliquid
+HL_PRIVATE_KEY = os.environ.get("HYPERLIQUID_PRIVATE_KEY")
+HL_WALLET_ADDRESS = os.environ.get("HYPERLIQUID_WALLET_ADDRESS")
 
-# 2. Connexion à MEXC (Données historiques)
-exchange_data = ccxt.mexc({
+exchange = ccxt.hyperliquid({
+    'privateKey': HL_PRIVATE_KEY,
+    'walletAddress': HL_WALLET_ADDRESS,
     'enableRateLimit': True,
     'timeout': 30000,
 })
 
-# 3. Configuration Telegram
+# 2. Configuration Telegram
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -29,20 +29,17 @@ def send_telegram_message(message):
         except Exception as e:
             print(f"Erreur Telegram: {e}", flush=True)
 
-cryptos = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+cryptos = ['BTC/USDC:USDC', 'ETH/USDC:USDC', 'SOL/USDC:USDC']
 
 def check_signal(symbol):
     try:
         print(f"Analyse de {symbol}...", flush=True)
-        # On récupère 200 bougies depuis MEXC
-        ohlcv = exchange_data.fetch_ohlcv(symbol, timeframe='1d', limit=200)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1d', limit=200)
         
         if not ohlcv or len(ohlcv) < 200:
             return f"❌ Pas assez de données pour {symbol}"
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        # Calcul des moyennes mobiles
         df['SMA_20'] = df['close'].rolling(window=20).mean()
         df['SMA_50'] = df['close'].rolling(window=50).mean()
         df['SMA_200'] = df['close'].rolling(window=200).mean()
@@ -50,21 +47,40 @@ def check_signal(symbol):
         last = df.iloc[-1]
         price = last['close']
         
-        # --- STRATÉGIE RÉELLE ---
         if price > last['SMA_200'] and last['SMA_20'] > last['SMA_50']:
             signal_msg = f"🟢 ACHAT possible sur {symbol} à {price:.2f}$"
             try:
-                # On enlève le /USDT pour MarginPad
-                symbol_mp = symbol.split('/')[0]
+                # --- GESTION DU LEVIER ET DE LA TAILLE MINIMALE ---
+                # On récupère le solde pour calculer la taille
+                balance = exchange.fetch_balance()
+                free_usdc = balance['USDC']['free']
                 
-                # On ouvre une position fictive
-                pos = mp.open(symbol_mp, "long", margin_usd=100, leverage=1)
-                signal_msg += f"\n✅ Position ouverte sur MarginPad !"
+                # Hyperliquid exige une position minimale de 10$
+                # On utilise un levier de 2x pour que la position soit assez grande
+                leverage = 2
+                exchange.set_leverage(leverage, symbol)
+                
+                # Calcul de la taille de la position (en actifs)
+                # On mise tout le solde disponible avec le levier
+                position_value = free_usdc * leverage
+                amount = position_value / price
+                
+                # Récupération du prix médian pour l'ordre au marché
+                markets = exchange.load_markets()
+                mid_price = markets[symbol]['info']['midPx']
+                
+                order = exchange.create_order(
+                    symbol, 
+                    'market', 
+                    'buy', 
+                    amount, 
+                    price=mid_price
+                )
+                signal_msg += f"\n✅ Position ouverte sur Hyperliquid ! Levier: {leverage}x"
                 send_telegram_message(signal_msg)
             except Exception as e:
-                signal_msg += f"\n❌ Erreur MarginPad: {e}"
+                signal_msg += f"\n❌ Erreur Hyperliquid: {e}"
             return signal_msg
-        # -------------------------
             
         elif price < last['SMA_200']:
             return f"🔴 ATTENTE sur {symbol} (Prix {price:.2f}$ sous SMA 200 à {last['SMA_200']:.2f}$)"
@@ -85,7 +101,7 @@ def bot_loop():
 
 @app.route('/')
 def home():
-    return "Bot opérationnel (MarginPad + Telegram) et en ligne !"
+    return "Bot Hyperliquid (RÉEL) en ligne !"
 
 if __name__ == "__main__":
     threading.Thread(target=bot_loop, daemon=True).start()
